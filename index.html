@@ -12,6 +12,23 @@
 </head>
 
 <body>
+    <!-- 登入對話框 -->
+    <div class="login-overlay" id="login-overlay">
+        <div class="login-dialog">
+            <div class="login-icon">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+                    <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" />
+                    <circle cx="12" cy="7" r="4" />
+                </svg>
+            </div>
+            <h2>歡迎使用 SIVT</h2>
+            <p>請輸入你的名稱以開始探究對話</p>
+            <input type="text" id="username-input" placeholder="請輸入名稱..." maxlength="20" autocomplete="off">
+            <button id="login-btn" class="login-submit-btn">開始探究</button>
+            <p class="login-hint">你的對話記錄將會被儲存以供學習分析</p>
+        </div>
+    </div>
+
     <div class="app-container">
         <!-- 側邊欄 -->
         <aside class="sidebar">
@@ -185,7 +202,8 @@
                                         d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48" />
                                 </svg>
                             </button>
-                            <input type="file" id="file-upload" accept="video/*,image/*" style="display: none;">
+                            <input type="file" id="file-upload" accept="video/*,image/*,.txt,.pdf,.docx,.md,.csv,.json"
+                                style="display: none;">
 
                             <textarea id="message-input" placeholder="輸入訊息..." rows="1"></textarea>
 
@@ -211,7 +229,7 @@
         </main>
     </div>
 
-    <script src="app.js?v=2"></script>
+    <script src="app.js?v=3"></script>
 </body>
 
 </html>

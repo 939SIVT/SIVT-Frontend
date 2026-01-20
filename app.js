@@ -11,11 +11,16 @@ const API_BASE_URL = 'https://unurged-marivel-unawaking.ngrok-free.dev';
 // DOM 元素
 let chatContainer, messageInput, sendBtn, clearBtn, modelSelect, statusIndicator, voiceBtn;
 let attachmentBtn, fileInput, splitLayout, videoPanel, mainPlayer, statusOverlay, resizer;
+let loginOverlay, usernameInput, loginBtn;
 
 // 狀態
 let isLoading = false;
 let currentPhase = 1;
 let currentVideoStatus = { is_processing: false, current_stage: null, error: null };
+
+// Session 狀態
+let currentSessionId = null;
+let currentUsername = null;
 
 // 語音相關
 let mediaRecorder = null;
@@ -53,9 +58,15 @@ async function init() {
     statusOverlay = document.getElementById('status-overlay');
     resizer = document.getElementById('resizer');
 
+    // 登入元素
+    loginOverlay = document.getElementById('login-overlay');
+    usernameInput = document.getElementById('username-input');
+    loginBtn = document.getElementById('login-btn');
+
     // 初始化功能
     checkHealth();
     setupEventListeners();
+    setupLoginListeners();
     setupResizer();
     autoResizeTextarea();
     // updatePhaseIndicator(1); // 暫時移除，因畫面改動可能已不需要或需重寫
@@ -119,7 +130,7 @@ function setupEventListeners() {
     }
 
     if (fileInput) {
-        fileInput.addEventListener('change', uploadVideo);
+        fileInput.addEventListener('change', uploadFile);
     }
 
     // 快速開始按鈕
@@ -130,6 +141,118 @@ function setupEventListeners() {
             sendMessage();
         });
     });
+}
+
+/**
+ * 設置登入相關事件監聽器
+ */
+function setupLoginListeners() {
+    // 登入按鈕點擊
+    loginBtn.addEventListener('click', handleLogin);
+
+    // Enter 鍵登入
+    usernameInput.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') {
+            e.preventDefault();
+            handleLogin();
+        }
+    });
+
+    // 頁面關閉時結束 session
+    window.addEventListener('beforeunload', () => {
+        if (currentSessionId) {
+            // 使用 fetch + keepalive 確保請求送出且 Content-Type 正確 (sendBeacon 預設 text/plain)
+            fetch(`${API_BASE_URL}/api/session/end`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'ngrok-skip-browser-warning': 'true'
+                },
+                body: JSON.stringify({ session_id: currentSessionId }),
+                keepalive: true
+            });
+        }
+    });
+}
+
+/**
+ * 處理使用者登入
+ */
+async function handleLogin() {
+    const username = usernameInput.value.trim();
+
+    if (!username) {
+        usernameInput.classList.add('error');
+        usernameInput.focus();
+        return;
+    }
+
+    loginBtn.disabled = true;
+    loginBtn.textContent = '連線中...';
+
+    try {
+        const response = await fetch(`${API_BASE_URL}/api/session/start`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'ngrok-skip-browser-warning': 'true'
+            },
+            body: JSON.stringify({ username })
+        });
+
+        const data = await response.json();
+
+        if (data.success) {
+            currentSessionId = data.session_id;
+            currentUsername = data.username;
+
+            // 隱藏登入對話框
+            loginOverlay.classList.add('hidden');
+
+            // 顯示歡迎訊息
+            addSystemMessage(`歡迎，${currentUsername}！對話已開始記錄。`);
+
+            console.log(`[Session] 已登入: ${currentUsername} (${currentSessionId})`);
+        } else {
+            addErrorMessage(data.error || '登入失敗');
+            loginBtn.disabled = false;
+            loginBtn.textContent = '開始探究';
+        }
+
+    } catch (error) {
+        console.error('登入錯誤:', error);
+        addErrorMessage('無法連接到伺服器');
+        loginBtn.disabled = false;
+        loginBtn.textContent = '開始探究';
+    }
+}
+
+/**
+ * 結束當前 session 並儲存
+ */
+async function endSession() {
+    if (!currentSessionId) return;
+
+    try {
+        const response = await fetch(`${API_BASE_URL}/api/session/end`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'ngrok-skip-browser-warning': 'true'
+            },
+            body: JSON.stringify({ session_id: currentSessionId })
+        });
+
+        const data = await response.json();
+
+        if (data.success) {
+            addSystemMessage(`對話記錄已儲存: ${data.filename}`);
+            currentSessionId = null;
+        }
+
+    } catch (error) {
+        console.error('結束 session 錯誤:', error);
+    }
 }
 
 /**
@@ -171,20 +294,35 @@ function setupResizer() {
 }
 
 /**
- * 上傳影片
+ * 上傳檔案（影片或圖片）
  */
-async function uploadVideo() {
+async function uploadFile() {
     if (!fileInput.files || fileInput.files.length === 0) return;
 
     const file = fileInput.files[0];
+    const isVideo = file.type.startsWith('video/');
+    const isImage = file.type.startsWith('image/');
 
-    // 檢查檔案類型，如果是圖片目前僅支援影片（未來可擴充）
-    if (!file.type.startsWith('video/')) {
-        addErrorMessage("目前僅支援影片檔案上傳與分析。");
-        fileInput.value = '';
-        return;
+    // 如果是影片，走影片處理流程
+    if (isVideo) {
+        await uploadVideoFile(file);
+    }
+    // 如果是圖片，走圖片對話流程
+    else if (isImage) {
+        await uploadImageFile(file);
+    }
+    // 其他類型：嘗試當作文字檔案處理
+    else {
+        await uploadTextFile(file);
     }
 
+    fileInput.value = '';
+}
+
+/**
+ * 上傳影片檔案
+ */
+async function uploadVideoFile(file) {
     const formData = new FormData();
     formData.append('video', file);
 
@@ -228,8 +366,128 @@ async function uploadVideo() {
         if (attachmentBtn) attachmentBtn.disabled = false;
         statusOverlay.style.display = 'none';
     }
+}
 
-    fileInput.value = '';
+/**
+ * 上傳圖片並與 AI 對話
+ */
+async function uploadImageFile(file) {
+    // 清除歡迎區域
+    const welcomeSection = chatContainer.querySelector('.welcome-section');
+    if (welcomeSection) {
+        welcomeSection.remove();
+    }
+
+    // 顯示圖片預覽訊息
+    const imageUrl = URL.createObjectURL(file);
+    addImageMessage(imageUrl, file.name);
+
+    // 顯示載入動畫
+    const typingIndicator = showTypingIndicator();
+    isLoading = true;
+    sendBtn.disabled = true;
+
+    try {
+        const formData = new FormData();
+        formData.append('image', file);
+        formData.append('message', '請仔細觀察這張圖片，描述你看到的內容，並思考其中可能蘊含的科學原理或探究問題。');
+        formData.append('provider', modelSelect.value);
+
+        const response = await fetch(`${API_BASE_URL}/api/chat-with-image`, {
+            method: 'POST',
+            headers: {
+                'ngrok-skip-browser-warning': 'true'
+            },
+            body: formData
+        });
+
+        const data = await response.json();
+        typingIndicator.remove();
+
+        if (data.success) {
+            addMessage(data.response, 'ai', data.provider);
+
+            // 更新探究歷程指示器
+            if (data.phase) {
+                updatePhaseIndicator(data.phase);
+            }
+        } else {
+            addErrorMessage(data.error || '圖片分析失敗');
+        }
+
+    } catch (error) {
+        typingIndicator.remove();
+        addErrorMessage('無法連接到伺服器進行圖片分析');
+    } finally {
+        isLoading = false;
+        sendBtn.disabled = false;
+    }
+}
+
+/**
+ * 上傳文字檔案
+ */
+async function uploadTextFile(file) {
+    // 清除歡迎區域
+    const welcomeSection = chatContainer.querySelector('.welcome-section');
+    if (welcomeSection) {
+        welcomeSection.remove();
+    }
+
+    // 顯示載入動畫
+    const typingIndicator = showTypingIndicator();
+    isLoading = true;
+
+    try {
+        const formData = new FormData();
+        formData.append('file', file);
+
+        const response = await fetch(`${API_BASE_URL}/api/upload-file`, {
+            method: 'POST',
+            headers: {
+                'ngrok-skip-browser-warning': 'true'
+            },
+            body: formData
+        });
+
+        const data = await response.json();
+        typingIndicator.remove();
+
+        if (data.success && data.type === 'text') {
+            addSystemMessage(`已上傳檔案: ${file.name} (${data.char_count} 字)`);
+            // 顯示部分內容預覽
+            const preview = data.content.substring(0, 500);
+            addMessage(`檔案內容預覽：\n\n${preview}${data.content.length > 500 ? '...' : ''}`, 'ai');
+        } else {
+            addErrorMessage(data.error || '檔案處理失敗');
+        }
+
+    } catch (error) {
+        typingIndicator.remove();
+        addErrorMessage('檔案上傳失敗');
+    } finally {
+        isLoading = false;
+    }
+}
+
+/**
+ * 添加圖片訊息到聊天區
+ */
+function addImageMessage(imageUrl, filename) {
+    const messageDiv = document.createElement('div');
+    messageDiv.className = 'message user';
+
+    messageDiv.innerHTML = `
+        <div class="message-content">
+            <div class="uploaded-image-container">
+                <img src="${imageUrl}" alt="${filename}" class="uploaded-image" onclick="window.open('${imageUrl}', '_blank')">
+                <span class="image-filename">${filename}</span>
+            </div>
+        </div>
+    `;
+
+    chatContainer.appendChild(messageDiv);
+    scrollToBottom();
 }
 
 /**
@@ -471,7 +729,8 @@ async function sendMessage() {
             },
             body: JSON.stringify({
                 message: message,
-                provider: provider
+                provider: provider,
+                session_id: currentSessionId  // 加入 session_id 以記錄對話
             })
         });
 
@@ -800,71 +1059,7 @@ function addAudioControls(messageElement, audio, contentDiv) {
 /**
  * 添加訊息到聊天區
  */
-function addMessage(content, type, provider = null, ragImages = []) {
-    const messageDiv = document.createElement('div');
-    messageDiv.className = `message ${type}`;
 
-    let headerText = '';
-    if (type === 'user') {
-        headerText = '你';
-    } else {
-        headerText = provider === 'openai' ? 'OpenAI' : 'Azure';
-    }
-
-    // 為 AI 訊息建立特殊的內容結構
-    if (type === 'ai') {
-        let imageHtml = '';
-        if (ragImages && ragImages.length > 0) {
-            // 數據來源呈現
-            imageHtml = `
-            <div class="rag-images">
-                <div class="rag-source-header">
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                        <circle cx="12" cy="12" r="10"/>
-                        <line x1="12" y1="16" x2="12" y2="12"/>
-                        <line x1="12" y1="8" x2="12.01" y2="8"/>
-                    </svg>
-                    <span>數據來源 (Data Source)</span>
-                </div>
-                <div class="image-grid">
-                    ${ragImages.map(url => `<img src="${API_BASE_URL}${url}" alt="參考畫面" onclick="window.open('${API_BASE_URL}${url}', '_blank')">`).join('')}
-                </div>
-            </div>`;
-        }
-
-        messageDiv.innerHTML = `
-            <div class="message-header">
-                <span>${headerText}</span>
-            </div>
-            <div class="message-bubble">
-                <div class="message-content voice-loading">
-                    <div class="voice-loading-indicator">
-                        <span></span><span></span><span></span>
-                    </div>
-                    <div class="voice-text" style="display: none;" data-full-text="${escapeHtml(content)}"></div>
-                    ${imageHtml}
-                </div>
-            </div>
-        `;
-    } else {
-        messageDiv.innerHTML = `
-            <div class="message-header">
-                <span>${headerText}</span>
-            </div>
-            <div class="message-bubble">
-                <div class="message-content">${formatMessage(content)}</div>
-            </div>
-        `;
-    }
-
-    chatContainer.appendChild(messageDiv);
-    scrollToBottom();
-
-    // 如果是 AI 訊息，自動播放語音並加入字幕效果
-    if (type === 'ai') {
-        playAIVoiceWithCaption(content, messageDiv);
-    }
-}
 
 // 輔助函數：跳脫 HTML 用於 data 屬性
 function escapeHtml(text) {
@@ -1134,7 +1329,8 @@ async function sendMessage() {
             body: JSON.stringify({
                 message: message,
                 provider: currentModel, // Changed from 'provider' to 'model'
-                current_frame: currentFrame // 傳送當前畫面 Base64
+                current_frame: currentFrame, // 傳送當前畫面 Base64
+                session_id: currentSessionId // 加入 session_id 以記錄對話
             })
         });
 
@@ -1144,7 +1340,7 @@ async function sendMessage() {
         typingIndicator.remove();
 
         if (data.success) {
-            addMessage(data.response, 'ai', data.provider);
+            addMessage(data.response, 'ai', data.provider, data.rag_images, data.message_id);
 
             // 更新探究歷程指示器
             if (data.phase) {
@@ -1463,7 +1659,7 @@ function addAudioControls(messageElement, audio, contentDiv) {
 /**
  * 添加訊息到聊天區
  */
-function addMessage(content, type, provider = null) {
+function addMessage(content, type, provider = null, ragImages = [], messageId = null) {
     const messageDiv = document.createElement('div');
     messageDiv.className = `message ${type}`;
 
@@ -1476,6 +1672,34 @@ function addMessage(content, type, provider = null) {
 
     // 為 AI 訊息建立特殊的內容結構
     if (type === 'ai') {
+        let imageHtml = '';
+        if (ragImages && ragImages.length > 0) {
+            // 數據來源呈現 (簡化版)
+            imageHtml = `
+            <div class="rag-source-container">
+                ${ragImages.map(url => {
+                const filename = url.split('/').pop().replace(/%20/g, ' '); // 簡單解碼檔名
+                return `
+                        <div class="rag-simple-pill" onclick="window.open('${API_BASE_URL}${url}', '_blank')">
+                            <span>${filename}</span>
+                        </div>`;
+            }).join('')}
+            </div>`;
+        }
+
+        let feedbackHtml = '';
+        if (messageId) {
+            feedbackHtml = `
+            <div class="feedback-actions">
+                <button class="feedback-btn like" onclick="submitFeedback('${messageId}', 1, this)" title="有幫助">
+                    <svg viewBox="0 0 24 24"><path d="M14 9V5a3 3 0 0 0-3-3l-4 9v11h11.28a2 2 0 0 0 2-1.7l1.38-9a2 2 0 0 0-2-2.3zM7 22H4a2 2 0 0 1-2-2v-7a2 2 0 0 1 2-2h3"></path></svg>
+                </button>
+                <button class="feedback-btn dislike" onclick="submitFeedback('${messageId}', -1, this)" title="沒幫助">
+                    <svg viewBox="0 0 24 24"><path d="M10 15v4a3 3 0 0 0 3 3l4-9V2H5.72a2 2 0 0 0-2 1.7l-1.38 9a2 2 0 0 0 2 2.3zm7-13h2.67A2.31 2.31 0 0 1 22 4v7a2.31 2.31 0 0 1-2.33 2H17"></path></svg>
+                </button>
+            </div>`;
+        }
+
         messageDiv.innerHTML = `
             <div class="message-header">
                 <span>${headerText}</span>
@@ -1487,6 +1711,8 @@ function addMessage(content, type, provider = null) {
                     </div>
                     <div class="voice-text" style="display: none;" data-full-text="${escapeHtml(content)}"></div>
                 </div>
+                ${imageHtml}
+                ${feedbackHtml}
             </div>
         `;
     } else {
@@ -1593,6 +1819,11 @@ function showTypingIndicator() {
  * 清除對話
  */
 function clearChat() {
+    // 如果有活躍的 session，先結束並儲存
+    if (currentSessionId) {
+        endSession();
+    }
+
     // 重置階段
     updatePhaseIndicator(1);
 
@@ -1641,6 +1872,51 @@ function escapeHtml(text) {
     const div = document.createElement('div');
     div.textContent = text;
     return div.innerHTML;
+}
+
+/**
+ * 送出回饋評分
+ */
+async function submitFeedback(messageId, rating, btnElement) {
+    if (!currentSessionId) return;
+
+    // 先移除所有 active 狀態 (樂觀 UI 更新)
+    const container = btnElement.parentElement;
+    const buttons = container.querySelectorAll('.feedback-btn');
+    const wasActive = btnElement.classList.contains('active');
+
+    buttons.forEach(btn => btn.classList.remove('active'));
+
+    // 如果原本已經是 active，則這次點擊是取消 (rating = 0)
+    // 但如果想簡化，就直接設為選中
+    if (!wasActive) {
+        btnElement.classList.add('active');
+    } else {
+        // 取消評分
+        rating = 0;
+    }
+
+    try {
+        const response = await fetch(`${API_BASE_URL}/api/feedback`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'ngrok-skip-browser-warning': 'true'
+            },
+            body: JSON.stringify({
+                session_id: currentSessionId,
+                message_id: messageId,
+                rating: rating
+            })
+        });
+
+        if (!response.ok) {
+            console.error('Feedback failed:', await response.text());
+            // 失敗時回滾 UI (這裡省略複雜回滾，假設成功)
+        }
+    } catch (e) {
+        console.error('Feedback error:', e);
+    }
 }
 
 // 啟動應用
